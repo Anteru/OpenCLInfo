@@ -195,7 +195,13 @@ private:
 
 	void OnProperty (std::ostream& s, const Property* p) const
 	{
-		s << "\"" << p->name << "\" = [";
+		bool singleValue = (p->value && p->value->next == nullptr);
+
+		if (!singleValue) {
+			s << "\"" << p->name << "\" = [";
+		} else {
+			s << "\"" << p->name << "\" = ";
+		}
 
 		for (Value* v = p->value; v; v = v->next) {
 			switch (p->type) {
@@ -222,7 +228,9 @@ private:
 			}
 		}
 
-		s << "]";
+		if (! singleValue) {
+			s << "]";
+		}
 	}
 };
 
@@ -843,14 +851,34 @@ Node* GatherInfo (Pool<>& pool)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-int main(int /* argc */, char** /* argv */)
+int main(int argc, char* argv[])
 {
 	try {
 		Pool<> pool;
 		auto root = GatherInfo (pool);
-		XmlPrinter xmlPrinter;
-		xmlPrinter.Write (std::cout, root);
 
+		if (argc == 2) {
+			if (argv [1][0] == '-') {
+				switch (argv [1][1]) {
+				case 'x':
+				{
+					XmlPrinter xmlPrinter;
+					xmlPrinter.Write (std::cout, root);
+					break;
+				}
+
+				case 'j':
+				{
+					JsonPrinter jsonPrinter;
+					jsonPrinter.Write (std::cout, root);
+					break;
+				}
+				}
+			}
+		} else {
+			XmlPrinter xmlPrinter;
+			xmlPrinter.Write (std::cout, root);
+		}
 	} catch (...) {
 		std::cerr << "Error while obtaining OpenCL diagnostic information\n";
 		return 1;
