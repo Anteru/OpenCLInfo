@@ -115,7 +115,14 @@ private:
 
 	void OnProperty (std::ostream& s, const Property* p) const
 	{
-		s << "<Property Name=\"" << p->name << "\">";
+		const char* t;
+		switch (p->type) {
+		case Property::PT_BOOL: t = "bool"; break;
+		case Property::PT_INT64: t = "int64"; break;
+		case Property::PT_STRING: t = "string"; break;
+		}
+
+		s << "<Property Name=\"" << p->name << "\" Type=\"" << t << "\">";
 
 		for (Value* v = p->value; v; v = v->next) {
 			s << "<Value>";
@@ -376,7 +383,7 @@ Value* CreateSizeTList (Pool<>& pool, void* buffer, std::size_t size)
 	Value* result = nullptr;
 	Value* last = nullptr;
 
-	for (int i = 0; i < size / sizeof (std::size_t); ++i) {
+	for (std::size_t i = 0; i < size / sizeof (std::size_t); ++i) {
 		Value* v = CreateValue (pool, static_cast<std::int64_t> (entries [i]));
 
 		if (last) {
@@ -398,6 +405,157 @@ Value* CreateBool (Pool<>& pool, void* buffer, std::size_t)
 		*static_cast<const cl_bool*> (buffer)));
 }
 
+template <typename T>
+struct BitfieldFetcher
+{
+	T value;
+	const char* n;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+template <typename T, int Size>
+Value* CreateBitfield (const T config, const BitfieldFetcher<T> (&fields)[Size], Pool<>& pool)
+{
+	Value* result = nullptr;
+	Value* lastValue = nullptr;
+
+	for (const auto field : fields) {
+		if ((config & field.value) == field.value) {
+			Value* v = pool.Allocate<Value> ();
+			v->s = field.n;
+
+			if (lastValue) {
+				lastValue->next = v;
+				lastValue = lastValue->next;
+			} else {
+				result = v;
+				lastValue = v;
+			}
+		}
+	}
+
+	return result;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceFPConfig (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_fp_config*> (buffer);
+
+	static const BitfieldFetcher<cl_device_fp_config> fields [] = {
+		{NIV_VALUESTRING (CL_FP_DENORM)},
+		{NIV_VALUESTRING (CL_FP_INF_NAN)},
+		{NIV_VALUESTRING (CL_FP_ROUND_TO_NEAREST)},
+		{NIV_VALUESTRING (CL_FP_ROUND_TO_ZERO)},
+		{NIV_VALUESTRING (CL_FP_ROUND_TO_INF)},
+		{NIV_VALUESTRING (CL_FP_FMA)},
+		{NIV_VALUESTRING (CL_FP_SOFT_FLOAT)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceExecutionCapabilities (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_exec_capabilities*> (buffer);
+
+	static const BitfieldFetcher<cl_device_exec_capabilities> fields [] = {
+		{NIV_VALUESTRING (CL_EXEC_KERNEL)},
+		{NIV_VALUESTRING (CL_EXEC_NATIVE_KERNEL)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceMemCacheType (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_mem_cache_type*> (buffer);
+
+	static const BitfieldFetcher<cl_device_mem_cache_type> fields [] = {
+		// {NIV_VALUESTRING (CL_NONE)},
+		{NIV_VALUESTRING (CL_READ_ONLY_CACHE)},
+		{NIV_VALUESTRING (CL_READ_WRITE_CACHE)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceLocalMemType (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_local_mem_type*> (buffer);
+
+	static const BitfieldFetcher<cl_device_local_mem_type> fields [] = {
+		// {NIV_VALUESTRING (CL_NONE)},
+		{NIV_VALUESTRING (CL_LOCAL)},
+		{NIV_VALUESTRING (CL_GLOBAL)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceAffinityDomain (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_affinity_domain*> (buffer);
+
+	static const BitfieldFetcher<cl_device_affinity_domain> fields [] = {
+		{NIV_VALUESTRING (CL_DEVICE_AFFINITY_DOMAIN_NUMA)},
+		{NIV_VALUESTRING (CL_DEVICE_AFFINITY_DOMAIN_L4_CACHE)},
+		{NIV_VALUESTRING (CL_DEVICE_AFFINITY_DOMAIN_L3_CACHE)},
+		{NIV_VALUESTRING (CL_DEVICE_AFFINITY_DOMAIN_L2_CACHE)},
+		{NIV_VALUESTRING (CL_DEVICE_AFFINITY_DOMAIN_L1_CACHE)},
+		{NIV_VALUESTRING (CL_DEVICE_AFFINITY_DOMAIN_NEXT_PARTITIONABLE)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDevicePartitionProperty (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_partition_property*> (buffer);
+
+	static const BitfieldFetcher<cl_device_partition_property> fields [] = {
+		{NIV_VALUESTRING (CL_DEVICE_PARTITION_EQUALLY)},
+		{NIV_VALUESTRING (CL_DEVICE_PARTITION_BY_COUNTS)},
+		{NIV_VALUESTRING (CL_DEVICE_PARTITION_BY_AFFINITY_DOMAIN)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateCommandQueueProperties (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_command_queue_properties*> (buffer);
+
+	static const BitfieldFetcher<cl_command_queue_properties> fields [] = {
+		{NIV_VALUESTRING (CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE)},
+		{NIV_VALUESTRING (CL_QUEUE_PROFILING_ENABLE)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceType (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_type*> (buffer);
+
+	static const BitfieldFetcher<cl_device_type> fields [] = {
+		{NIV_VALUESTRING (CL_DEVICE_TYPE_CPU)},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE_GPU)},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE_ACCELERATOR)},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE_DEFAULT)},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE_CUSTOM)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 template <typename GetInfoFunction, typename CLObject, typename Info, typename CreateFunction>
 Value* GetValue (GetInfoFunction getInfoFunction, CLObject clObject, Info info,
@@ -405,6 +563,10 @@ Value* GetValue (GetInfoFunction getInfoFunction, CLObject clObject, Info info,
 {
 	size_t size;
 	NIV_SAFE_CL (getInfoFunction (clObject, info, 0, nullptr, &size));
+
+	if (size == 0) {
+		return nullptr;
+	}
 
 	// Won't win speed records, but will do
 	std::vector<unsigned char> buffer (size);
@@ -519,13 +681,13 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_AVAILABLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_BUILT_IN_KERNELS), CreateCharList, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_COMPILER_AVAILABLE), CreateBool, Property::PT_BOOL},
-		// {NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_ENDIAN_LITTLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_ERROR_CORRECTION_SUPPORT), CreateBool, Property::PT_BOOL},
-		// {NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecutionCapabilities, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_EXTENSIONS), CreateCharList, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_SIZE), CreateULong, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateCharList, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_SIZE), CreateULong, Property::PT_INT64},
 		// {NIV_VALUESTRING (CL_DEVICE_GLOBAL_VARIABLE_PREFERRED_TOTAL_SIZE), CreateSizeT, Property::PT_STRING},
@@ -541,7 +703,7 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_IMAGE_SUPPORT), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_LINKER_AVAILABLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_SIZE), CreateULong, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_TYPE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_TYPE), CreateDeviceLocalMemType, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_CLOCK_FREQUENCY), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_COMPUTE_UNITS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_ARGS), CreateUInt, Property::PT_INT64},
@@ -570,10 +732,10 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_HALF), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_OPENCL_C_VERSION), CreateChar, Property::PT_STRING},
 		// {NIV_VALUESTRING (CL_DEVICE_PARENT_DEVICE), CreateChar, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_PARTITION_AFFINITY_DOMAIN), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_PARTITION_AFFINITY_DOMAIN), CreateDeviceAffinityDomain, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_PARTITION_MAX_SUB_DEVICES), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PARTITION_PROPERTIES), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PARTITION_TYPE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PARTITION_PROPERTIES), CreateDevicePartitionProperty, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_PARTITION_TYPE), CreateDevicePartitionProperty, Property::PT_STRING},
 		// {NIV_VALUESTRING (CL_DEVICE_PIPE_MAX_ACTIVE_RESERVATIONS), CreateUInt, Property::PT_INT64},
 		// {NIV_VALUESTRING (CL_DEVICE_PIPE_MAX_PACKET_SIZE), CreateUInt, Property::PT_INT64},
 		// {NIV_VALUESTRING (CL_DEVICE_PLATFORM), CreateUInt, Property::PT_INT64},
@@ -581,8 +743,6 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_INTEROP_USER_SYNC), CreateBool, Property::PT_BOOL},
 		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_LOCAL_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
 		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_PLATFORM_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
-
-
 		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_CHAR), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_SHORT), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_INT), CreateUInt, Property::PT_INT64},
@@ -598,11 +758,11 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		// {NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_PROPERTIES), CreateSizeT, Property::PT_INT64},
 		// {NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_HOST_PROPERTIES), CreateSizeT, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_REFERENCE_COUNT), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_SINGLE_FP_CONFIG), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_SINGLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
 		// {NIV_VALUESTRING (CL_DEVICE_SPIR_VERSIONS), CreateChar, Property::PT_STRING},
 		// {NIV_VALUESTRING (CL_DEVICE_SVM_CAPABILITIES), CreateChar, Property::PT_STRING},
 		// {NIV_VALUESTRING (CL_DEVICE_TERMINATE_CAPABILITY_KHR), CreateChar, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_TYPE), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE), CreateDeviceType, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_VENDOR), CreateChar, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_VENDOR_ID), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_VERSION), CreateChar, Property::PT_STRING},
