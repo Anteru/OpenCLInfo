@@ -12,6 +12,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#if _MSC_VER
+#pragma warning (disable: 4127)
+#endif
+
 #ifdef __APPLE__
 	#include <OpenCL/cl.h>
 #else
@@ -20,12 +24,25 @@
 
 #define NIV_SAFE_CL(expr) do{const auto r = (expr); if (r != CL_SUCCESS) { std::cerr << #expr << " failed with error code " << r << "\n"; return nullptr; }}while(0)
 
+// Thanks, gnu_dev_major
+#ifdef major
+#undef major
+#endif
+
+#ifdef minor
+#undef minor
+#endif
+
 template <int BlockSize = 1048576>
 struct Pool
 {
 public:
 	void* Allocate (int size)
 	{
+		if (size < 0 || size >= BlockSize) {
+			throw std::bad_alloc ();
+		}
+
 		if ((currentBlockOffset_ + size) > BlockSize) {
 			blocks_.push_back (std::vector<unsigned char> (BlockSize));
 
@@ -52,6 +69,102 @@ private:
 	std::vector<unsigned char>*				currentBlock_ = nullptr;
 	int currentBlockOffset_ = BlockSize;
 };
+
+struct Version
+{
+	int major = 0;
+	int minor = 0;
+
+	Version () = default;
+
+	Version (const int major, const int minor)
+	: major (major)
+	, minor (minor)
+	{
+	}
+
+	Version (const int major)
+	: Version (major, 0)
+	{
+	}
+
+	bool operator== (const Version& other) const
+	{
+		return major == other.major && minor == other.minor;
+	}
+
+	bool operator!= (const Version& other) const
+	{
+		return major != other.major || minor != other.minor;
+	}
+
+	bool operator< (const Version& other) const
+	{
+		if (major != other.major) {
+			return major < other.major;
+		}
+
+		return minor < other.minor;
+	}
+
+	bool operator<= (const Version& other) const
+	{
+		if (major != other.major) {
+			return major < other.major;
+		}
+
+		return minor <= other.minor;
+	}
+
+	bool operator>= (const Version& other) const
+	{
+		if (major != other.major) {
+			return major > other.major;
+		}
+
+		return minor >= other.minor;
+	}
+
+	bool operator> (const Version& other) const
+	{
+		if (major != other.major) {
+			return major > other.major;
+		}
+
+		return minor > other.minor;
+	}
+};
+
+Version ParseVersion (const char* s)
+{
+	// Version string format is: OpenCL 1.0 VENDOR_SPECIFIC_STUFF
+	//								   ^   ^ guaranteed spaces
+	// We search for first space, then run until second space, and
+	// copy to minorVersion/majorVersion
+	char minorVersion [16] = { 0 };
+	char majorVersion [16] = { 0 };
+
+	while (*s != ' ') {
+		++s;
+	}
+
+	++s;
+
+	const char* minorStart = s;
+	while (*s != '.') {
+		++s;
+	}
+	::memcpy (minorVersion, minorStart, s - minorStart);
+	++s;
+
+	const char* majorStart = s;
+	while (*s != ' ') {
+		++s;
+	}
+	::memcpy (majorVersion, majorStart, s - majorStart);
+
+	return { std::atoi (minorVersion), std::atoi (majorVersion) };
+}
 
 struct Value
 {
@@ -115,7 +228,7 @@ private:
 
 	void OnProperty (std::ostream& s, const Property* p) const
 	{
-		const char* t;
+		const char* t = nullptr;
 		switch (p->type) {
 		case Property::PT_BOOL: t = "bool"; break;
 		case Property::PT_INT64: t = "int64"; break;
@@ -250,10 +363,12 @@ const char* ChannelOrderToString (cl_channel_order order)
 	case CL_Rx: return "Rx";
 	case CL_RGx: return "RGx";
 	case CL_RGBx: return "RGBx";
+#if CL_VERSION_2_0
+	case CL_DEPTH_STENCIL: return "DEPTH_STENCIL";
+#endif
+
 	default: return "Unknown channel order";
 	}
-
-	return nullptr;
 }
 
 const char* ChannelDataTypeToString (cl_channel_type type)
@@ -276,8 +391,6 @@ const char* ChannelDataTypeToString (cl_channel_type type)
 	case CL_FLOAT: return "float";
 	default: return "Unknown data type";
 	}
-	
-	return nullptr;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -287,7 +400,8 @@ Value* CreateValue (Pool<>& pool, const char* value)
 
 	const auto l = ::strlen (value);
 
-	auto s = pool.Allocate (l + 1);
+	// Pool will fail anyway if l > 4 MiB or negative
+	auto s = pool.Allocate (static_cast<int> (l) + 1);
 	::memcpy (s, value, l);
 	v->s = static_cast<const char*> (s);
 
@@ -409,8 +523,7 @@ Value* CreateSizeTList (Pool<>& pool, void* buffer, std::size_t size)
 ////////////////////////////////////////////////////////////////////////////////
 Value* CreateBool (Pool<>& pool, void* buffer, std::size_t)
 {
-	return CreateValue (pool, static_cast<bool> (
-		*static_cast<const cl_bool*> (buffer)));
+	return CreateValue (pool, *static_cast<const cl_bool*> (buffer) != 0);
 }
 
 template <typename T>
@@ -564,6 +677,23 @@ Value* CreateDeviceType (Pool<>& pool, void* buffer, std::size_t)
 	return CreateBitfield (config, fields, pool);
 }
 
+#ifdef CL_VERSION_2_0
+////////////////////////////////////////////////////////////////////////////////
+Value* CreateDeviceSVMCapabilities (Pool<>& pool, void* buffer, std::size_t)
+{
+	const auto config = *static_cast<const cl_device_svm_capabilities*> (buffer);
+
+	static const BitfieldFetcher<cl_device_svm_capabilities> fields [] = {
+		{NIV_VALUESTRING (CL_DEVICE_SVM_COARSE_GRAIN_BUFFER)},
+		{NIV_VALUESTRING (CL_DEVICE_SVM_FINE_GRAIN_BUFFER)},
+		{NIV_VALUESTRING (CL_DEVICE_SVM_FINE_GRAIN_SYSTEM)},
+		{NIV_VALUESTRING (CL_DEVICE_SVM_ATOMICS)}
+	};
+
+	return CreateBitfield (config, fields, pool);
+}
+#endif
+
 ////////////////////////////////////////////////////////////////////////////////
 template <typename GetInfoFunction, typename CLObject, typename Info, typename CreateFunction>
 Value* GetValue (GetInfoFunction getInfoFunction, CLObject clObject, Info info,
@@ -584,12 +714,17 @@ Value* GetValue (GetInfoFunction getInfoFunction, CLObject clObject, Info info,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-template <typename F, typename P, typename T, int Count>
-void GetProperties (Pool<>& pool, Node* node, F f, P clObject, const T (&infos)[Count])
+template <typename F, typename P, typename Container>
+void GetProperties (Pool<>& pool, Node* node, F f, P clObject,
+	const Container& c)
 {
 	Property* lastProperty = node->firstProperty;
+	
+	while (lastProperty && lastProperty->next) {
+		lastProperty = lastProperty->next;
+	}
 
-	for (const auto info : infos) {
+	for (const auto info : c) {
 		Property* p = pool.Allocate<Property> ();
 		p->type = info.type;
 		p->name = info.n;
@@ -606,19 +741,31 @@ void GetProperties (Pool<>& pool, Node* node, F f, P clObject, const T (&infos)[
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-Node* GatherContextInfo (cl_context ctx, Pool<>& pool)
+Node* GatherContextInfo (cl_context ctx, Pool<>& pool, const Version clVersion)
 {
-	static const struct {
+	struct ImageType
+	{
 		cl_mem_object_type type;
 		const char* n;
-	} types [] = {
+	};
+
+	static const std::vector<ImageType> types_CL_1_0 = {
 		{CL_MEM_OBJECT_IMAGE1D, "Image1D"},
-		{CL_MEM_OBJECT_IMAGE1D_BUFFER, "Image1DBuffer"},
 		{CL_MEM_OBJECT_IMAGE2D, "Image2D"},
-		{CL_MEM_OBJECT_IMAGE3D, "Image3D"},
+		{CL_MEM_OBJECT_IMAGE3D, "Image3D"}
+	};
+
+	static const std::vector<ImageType> types_CL_1_2 = {
+		{CL_MEM_OBJECT_IMAGE1D_BUFFER, "Image1DBuffer"},
 		{CL_MEM_OBJECT_IMAGE1D_ARRAY, "Image1DArray"},
 		{CL_MEM_OBJECT_IMAGE2D_ARRAY, "Image2DArray"}
 	};
+
+	std::vector<ImageType> types = types_CL_1_0;
+
+	if (clVersion >= Version (1, 2)) {
+		types.insert (types.end (), types_CL_1_2.begin (), types_CL_1_2.end ());
+	}
 
 	Node* imageFormats = pool.Allocate<Node> ();
 	imageFormats->name = "ImageFormats";
@@ -684,7 +831,132 @@ Node* GatherContextInfo (cl_context ctx, Pool<>& pool)
 ////////////////////////////////////////////////////////////////////////////////
 Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 {
-	static const PropertyFetcher<cl_device_info> infos [] = {
+	// Unused properties
+	// {NIV_VALUESTRING (CL_DEVICE_PARENT_DEVICE), CreateChar, Property::PT_STRING},
+	// {NIV_VALUESTRING (CL_DEVICE_PLATFORM), CreateUInt, Property::PT_INT64},
+
+#ifdef CL_VERSION_1_0
+	static const std::vector<PropertyFetcher<cl_device_info>> infos_CL_1_0 = {
+		{NIV_VALUESTRING (CL_DEVICE_ADDRESS_BITS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_AVAILABLE), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_COMPILER_AVAILABLE), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_ENDIAN_LITTLE), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_ERROR_CORRECTION_SUPPORT), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecutionCapabilities, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_EXTENSIONS), CreateCharList, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE2D_MAX_HEIGHT), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE2D_MAX_WIDTH), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_DEPTH), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_HEIGHT), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_WIDTH), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE_SUPPORT), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_TYPE), CreateDeviceLocalMemType, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_CLOCK_FREQUENCY), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_COMPUTE_UNITS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_MEM_ALLOC_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_PARAMETER_SIZE), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_READ_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_SAMPLERS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_GROUP_SIZE), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_ITEM_SIZES), CreateSizeTList, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WRITE_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MEM_BASE_ADDR_ALIGN), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NAME), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_OPENCL_C_VERSION), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_CHAR), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_SHORT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_INT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_LONG), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_DOUBLE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_HALF), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PROFILE), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_PROFILING_TIMER_RESOLUTION), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_SINGLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE), CreateDeviceType, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_VENDOR), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_VENDOR_ID), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_VERSION), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DRIVER_VERSION), CreateChar, Property::PT_STRING}
+	};
+#endif
+
+#ifdef CL_VERSION_1_1
+	static const std::vector<PropertyFetcher<cl_device_info>> infos_CL_1_1 = {
+		{NIV_VALUESTRING (CL_DEVICE_ADDRESS_BITS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_AVAILABLE), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_COMPILER_AVAILABLE), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_ENDIAN_LITTLE), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_ERROR_CORRECTION_SUPPORT), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecutionCapabilities, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_EXTENSIONS), CreateCharList, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_HOST_UNIFIED_MEMORY), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE2D_MAX_HEIGHT), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE2D_MAX_WIDTH), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_DEPTH), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_HEIGHT), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_WIDTH), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_IMAGE_SUPPORT), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_LOCAL_MEM_TYPE), CreateDeviceLocalMemType, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_CLOCK_FREQUENCY), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_COMPUTE_UNITS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_MEM_ALLOC_SIZE), CreateULong, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_PARAMETER_SIZE), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_READ_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_SAMPLERS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_GROUP_SIZE), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_ITEM_SIZES), CreateSizeTList, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_WRITE_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MEM_BASE_ADDR_ALIGN), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NAME), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_CHAR), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_SHORT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_INT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_LONG), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_FLOAT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_DOUBLE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_HALF), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_OPENCL_C_VERSION), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_CHAR), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_SHORT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_INT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_LONG), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_DOUBLE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_HALF), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PROFILE), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_PROFILING_TIMER_RESOLUTION), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_SINGLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_TYPE), CreateDeviceType, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_VENDOR), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_VENDOR_ID), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_VERSION), CreateChar, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DRIVER_VERSION), CreateChar, Property::PT_STRING}
+	};
+#endif
+
+#ifdef CL_VERSION_1_2
+	static const std::vector<PropertyFetcher<cl_device_info>> infos_CL_1_2 = {
 		{NIV_VALUESTRING (CL_DEVICE_ADDRESS_BITS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_AVAILABLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_BUILT_IN_KERNELS), CreateCharList, Property::PT_STRING},
@@ -698,7 +970,6 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_SIZE), CreateULong, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_GLOBAL_VARIABLE_PREFERRED_TOTAL_SIZE), CreateSizeT, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_IMAGE2D_MAX_HEIGHT), CreateSizeT, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_IMAGE2D_MAX_WIDTH), CreateSizeT, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_IMAGE3D_MAX_DEPTH), CreateSizeT, Property::PT_INT64},
@@ -716,14 +987,9 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_MAX_COMPUTE_UNITS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_ARGS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE), CreateULong, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_MAX_GLOBAL_VARIABLE_SIZE), CreateSizeT, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_MEM_ALLOC_SIZE), CreateULong, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_MAX_ON_DEVICE_EVENTS), CreateUint, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_MAX_ON_DEVICE_QUEUES), CreateUint, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_PARAMETER_SIZE), CreateSizeT, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_MAX_PIPE_ARGS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_READ_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_MAX_READ_WRITE_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_SAMPLERS), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_GROUP_SIZE), CreateSizeT, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS), CreateUInt, Property::PT_INT64},
@@ -739,18 +1005,10 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_DOUBLE), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_NATIVE_VECTOR_WIDTH_HALF), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_OPENCL_C_VERSION), CreateChar, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_PARENT_DEVICE), CreateChar, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_PARTITION_AFFINITY_DOMAIN), CreateDeviceAffinityDomain, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_PARTITION_MAX_SUB_DEVICES), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PARTITION_PROPERTIES), CreateDevicePartitionProperty, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_PARTITION_TYPE), CreateDevicePartitionProperty, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_PIPE_MAX_ACTIVE_RESERVATIONS), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PIPE_MAX_PACKET_SIZE), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PLATFORM), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_GLOBAL_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_INTEROP_USER_SYNC), CreateBool, Property::PT_BOOL},
-		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_LOCAL_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_PREFERRED_PLATFORM_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_CHAR), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_SHORT), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_VECTOR_WIDTH_INT), CreateUInt, Property::PT_INT64},
@@ -761,32 +1019,84 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_PRINTF_BUFFER_SIZE), CreateSizeT, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_PROFILE), CreateChar, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_PROFILING_TIMER_RESOLUTION), CreateSizeT, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_MAX_SIZE), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_PREFERRED_SIZE), CreateUInt, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_PROPERTIES), CreateSizeT, Property::PT_INT64},
-		// {NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_HOST_PROPERTIES), CreateSizeT, Property::PT_INT64},
-		{NIV_VALUESTRING (CL_DEVICE_REFERENCE_COUNT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_QUEUE_PROPERTIES), CreateCommandQueueProperties, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_SINGLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_SPIR_VERSIONS), CreateChar, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_SVM_CAPABILITIES), CreateChar, Property::PT_STRING},
-		// {NIV_VALUESTRING (CL_DEVICE_TERMINATE_CAPABILITY_KHR), CreateChar, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_TYPE), CreateDeviceType, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_VENDOR), CreateChar, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_VENDOR_ID), CreateUInt, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_VERSION), CreateChar, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DRIVER_VERSION), CreateChar, Property::PT_STRING}
 	};
+#endif
+
+#if CL_VERSION_2_0
+	static const std::vector<PropertyFetcher<cl_device_info>> infos_CL_2_0 = {
+		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_VARIABLE_PREFERRED_TOTAL_SIZE), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_GLOBAL_VARIABLE_SIZE), CreateSizeT, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_ON_DEVICE_EVENTS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_ON_DEVICE_QUEUES), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_PIPE_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_MAX_READ_WRITE_IMAGE_ARGS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PIPE_MAX_ACTIVE_RESERVATIONS), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PIPE_MAX_PACKET_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_GLOBAL_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_INTEROP_USER_SYNC), CreateBool, Property::PT_BOOL},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_LOCAL_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_PREFERRED_PLATFORM_ATOMIC_ALIGNMENT), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_MAX_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_PREFERRED_SIZE), CreateUInt, Property::PT_INT64},
+		{NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_DEVICE_PROPERTIES), CreateCommandQueueProperties, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_QUEUE_ON_HOST_PROPERTIES), CreateCommandQueueProperties, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_SVM_CAPABILITIES), CreateDeviceSVMCapabilities, Property::PT_STRING}
+	};
+
+	// Extension properties
+	static const std::vector<PropertyFetcher<cl_device_info>> infos_CL_2_0_Ext = {
+		// {NIV_VALUESTRING (CL_DEVICE_SPIR_VERSIONS), CreateCharList, Property::PT_STRING},
+		// {NIV_VALUESTRING (CL_DEVICE_TERMINATE_CAPABILITY_KHR), CreateDeviceTerminateCapability, Property::PT_STRING},
+	};
+#endif
 
 	Node* node = pool.Allocate<Node> ();
 	node->name = "Device";
 
-	GetProperties (pool, node, clGetDeviceInfo, id, infos);
+	// Get OpenCL version
+	std::size_t versionSize;
+	NIV_SAFE_CL (clGetDeviceInfo(id, CL_DEVICE_VERSION, 0, nullptr, &versionSize));
+
+	std::string versionString;
+	versionString.resize (versionSize);
+	NIV_SAFE_CL (clGetDeviceInfo(id, CL_DEVICE_VERSION, versionSize,
+		// Ugly but safe
+		const_cast<char*> (versionString.data ()), nullptr));
+
+	const auto version = ParseVersion (versionString.c_str ());
+
+	if (version == Version (1, 0)) {
+		GetProperties (pool, node, clGetDeviceInfo, id, infos_CL_1_0);
+	}
+#if CL_VERSION_1_1
+	else if (version == Version (1, 1)) {
+		GetProperties (pool, node, clGetDeviceInfo, id, infos_CL_1_1);
+	}
+#endif
+#if CL_VERSION_1_2
+	else if (version >= Version (1, 2)) {
+		GetProperties (pool, node, clGetDeviceInfo, id, infos_CL_1_2);
+	}
+#endif
+
+#if CL_VERSION_2_0
+	if (version >= Version (2, 0)) {
+		GetProperties (pool, node, clGetDeviceInfo, id, infos_CL_2_0);
+	}
+#endif
 
 	cl_int result;
 	auto ctx = clCreateContext (nullptr, 1, &id, nullptr, nullptr, &result);
 
 	if (result == CL_SUCCESS) {
-		node->firstChild = GatherContextInfo (ctx, pool);
+		node->firstChild = GatherContextInfo (ctx, pool, version);
 	}
 
 	return node;
@@ -801,7 +1111,6 @@ Node* GatherInfo (Pool<>& pool)
 
 	cl_uint numPlatforms;
 
-	// First, query the total number of platforms
 	NIV_SAFE_CL(clGetPlatformIDs (0, NULL, &numPlatforms));
 	if (numPlatforms <= 0) {
 		std::cerr << "Failed to find any OpenCL platform." << std::endl;
@@ -811,13 +1120,12 @@ Node* GatherInfo (Pool<>& pool)
 	std::vector<cl_platform_id> platformIds (numPlatforms);
 	NIV_SAFE_CL(clGetPlatformIDs (numPlatforms, platformIds.data (), nullptr));
 
-	// Iterate through the list of platforms Displaying associated information
 	for (const auto platformId : platformIds) {
 		Node* platform = pool.Allocate <Node> ();
 		root->firstChild = platform;
 		platform->name = "Platform";
 
-		static const PropertyFetcher<cl_platform_info> infos [] = {
+		static const std::vector<PropertyFetcher<cl_platform_info>> infos = {
 			{ NIV_VALUESTRING (CL_PLATFORM_PROFILE), CreateChar, Property::PT_STRING},
 			{ NIV_VALUESTRING (CL_PLATFORM_VERSION), CreateChar, Property::PT_STRING},
 			{ NIV_VALUESTRING (CL_PLATFORM_NAME), CreateChar, Property::PT_STRING},
