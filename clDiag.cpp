@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <cassert>
+
 #if _MSC_VER
 #pragma warning (disable: 4127)
 #endif
@@ -33,6 +35,7 @@
 #undef minor
 #endif
 
+namespace {
 template <int BlockSize = 1048576>
 struct Pool
 {
@@ -44,7 +47,7 @@ public:
 		}
 
 		if ((currentBlockOffset_ + size) > BlockSize) {
-			blocks_.push_back (std::vector<unsigned char> (BlockSize));
+			blocks_.emplace_back (std::vector<unsigned char> (BlockSize));
 
 			currentBlockOffset_ = 0;
 			currentBlock_ = &(blocks_.back ());
@@ -141,31 +144,43 @@ Version ParseVersion (const char* s)
 	//								   ^   ^ guaranteed spaces
 	// We search for first space, then run until second space, and
 	// copy to minorVersion/majorVersion
+	// Version number should be always less than 16 bytes
 	char minorVersion [16] = { 0 };
 	char majorVersion [16] = { 0 };
 
+	// Skip OpenCL<SPACE>
 	while (*s != ' ') {
 		++s;
 	}
 
 	++s;
 
-	const char* minorStart = s;
+	// Major version
+	const char* majorStart = s;
 	while (*s != '.') {
 		++s;
 	}
-	::memcpy (minorVersion, minorStart, s - minorStart);
+
+	assert ((s-majorStart) < 16);
+	::memcpy (majorVersion, majorStart, s - majorStart);
 	++s;
 
-	const char* majorStart = s;
+	// Minor
+	const char* minorStart = s;
 	while (*s != ' ') {
 		++s;
 	}
-	::memcpy (majorVersion, majorStart, s - majorStart);
 
-	return { std::atoi (minorVersion), std::atoi (majorVersion) };
+	assert ((s-minorStart) < 16);
+	::memcpy (minorVersion, minorStart, s - minorStart);
+
+	return { std::atoi (majorVersion), std::atoi (minorVersion) };
 }
 
+/**
+Holds a property value. If next is not null, there are more values for this
+property.
+*/
 struct Value
 {
 	union {
@@ -177,6 +192,9 @@ struct Value
 	Value*	next;
 };
 
+/**
+A property. May contain one value, in this case, value will be non-zero.
+*/
 struct Property
 {
 	enum Type
@@ -193,6 +211,11 @@ struct Property
 	Type		type;
 };
 
+/*
+An interior node in the property tree. If firstChild is non-null, there is a
+child branch. Sibling nodes can be enumerated using the next pointer. Properties
+are present if firstProperty is not null.
+*/
 struct Node
 {
 	const char* name;
@@ -202,6 +225,11 @@ struct Node
 	Property*	firstProperty;
 };
 
+/**
+Dump tree to XML.
+
+The output is unformatted, that is, there is no whitespace between elements.
+*/
 struct XmlPrinter
 {
 public:
@@ -266,6 +294,9 @@ private:
 	}
 };
 
+/**
+Dump tree to JSON.
+*/
 struct JsonPrinter
 {
 public:
@@ -347,6 +378,7 @@ private:
 	}
 };
 
+// For image_format output
 const char* ChannelOrderToString (cl_channel_order order)
 {
 	switch (order) {
@@ -371,6 +403,7 @@ const char* ChannelOrderToString (cl_channel_order order)
 	}
 }
 
+// for image format output
 const char* ChannelDataTypeToString (cl_channel_type type)
 {
 	switch (type) {
@@ -400,7 +433,7 @@ Value* CreateValue (Pool<>& pool, const char* value)
 
 	const auto l = ::strlen (value);
 
-	// Pool will fail anyway if l > 4 MiB or negative
+	// Pool will fail if this cast goes wrong
 	auto s = pool.Allocate (static_cast<int> (l) + 1);
 	::memcpy (s, value, l);
 	v->s = static_cast<const char*> (s);
@@ -451,6 +484,8 @@ Value* CreateCharList (Pool<>& pool, void* buffer, std::size_t)
 	Value* result = nullptr;
 	Value* last = nullptr;
 
+	// This is a string tokenizer, similar to strtok (it will put 0-bytes into
+	// the source buffer). We don't use strtok to ensure this is reentrant
 	while (*p != '\0') {
 		char* s = p;
 		while (*p != '\0' && *p != ' ') {
@@ -720,6 +755,8 @@ void GetProperties (Pool<>& pool, Node* node, F f, P clObject,
 {
 	Property* lastProperty = node->firstProperty;
 	
+	// If the node already has a property, skip until the end of the property
+	// list
 	while (lastProperty && lastProperty->next) {
 		lastProperty = lastProperty->next;
 	}
@@ -1101,9 +1138,10 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 
 	return node;
 }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
-Node* GatherInfo (Pool<>& pool)
+Node* GatherOpenCLInfo (Pool<>& pool)
 {
 	Node* root = pool.Allocate <Node> ();
 
@@ -1163,7 +1201,7 @@ int main(int argc, char* argv[])
 {
 	try {
 		Pool<> pool;
-		auto root = GatherInfo (pool);
+		auto root = GatherOpenCLInfo (pool);
 
 		if (argc == 2) {
 			if (argv [1][0] == '-') {
