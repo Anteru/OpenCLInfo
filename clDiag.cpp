@@ -2,7 +2,7 @@
 // Licensed under the 3-clause BSD license
 
 #include <iostream>
-#include <sstream>
+#include <iomanip>
 #include <vector>
 #include <iterator>
 
@@ -378,6 +378,84 @@ private:
 	}
 };
 
+/**
+Dump tree, formatted for reading on a console.
+
+The output is pretty-printed for consoles
+*/
+struct ConsolePrinter
+{
+public:
+	void Write (std::ostream& s, const Node* tree) const
+	{
+		OnNode (s, tree, 0);
+	}
+
+private:
+	static void Indent (std::ostream& s, const int indentation)
+	{
+		for (int i = 0; i < indentation; ++i) {
+			s << "  ";
+		}
+	}
+
+	void OnNode (std::ostream& s, const Node* node, const int indentation) const
+	{
+		Indent (s, indentation);
+		s << node->name << '\n';
+
+		std::size_t maxPropertyLength = 0;
+		for (Property* p = node->firstProperty; p; p = p->next) {
+			maxPropertyLength = std::max (maxPropertyLength,
+				::strlen (p->name));
+		}
+
+		for (Property* p = node->firstProperty; p; p = p->next) {
+			OnProperty (s, p, maxPropertyLength, indentation + 1);
+		}
+
+		for (Node* n = node->firstChild; n; n = n->next) {
+			OnNode (s, n, indentation + 1);
+			s << '\n';
+		}
+	}
+
+	void OnProperty (std::ostream& s, const Property* p,
+		const std::size_t fieldWidth, const int indentation) const
+	{
+		Indent (s, indentation);
+
+		s << std::left << std::setw (fieldWidth) << p->name << " : ";
+
+		for (Value* v = p->value; v; v = v->next) {
+			switch (p->type) {
+			case Property::PT_BOOL:
+				if (v->b) {
+					s << "true";
+				} else {
+					s << "false";
+				}
+				break;
+
+
+			case Property::PT_INT64:
+				s << v->i;
+				break;
+
+			case Property::PT_STRING:
+				s << v->s;
+				break;
+			}
+
+			if (v->next) {
+				s << ' ';
+			}
+		}
+
+		s << '\n';
+	}
+};
+
 // For image_format output
 const char* ChannelOrderToString (cl_channel_order order)
 {
@@ -612,7 +690,7 @@ Value* CreateDeviceFPConfig (Pool<>& pool, void* buffer, std::size_t)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-Value* CreateDeviceExecutionCapabilities (Pool<>& pool, void* buffer, std::size_t)
+Value* CreateDeviceExecCapabilities (Pool<>& pool, void* buffer, std::size_t)
 {
 	const auto config = *static_cast<const cl_device_exec_capabilities*> (buffer);
 
@@ -880,7 +958,7 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_ENDIAN_LITTLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_ERROR_CORRECTION_SUPPORT), CreateBool, Property::PT_BOOL},
-		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecutionCapabilities, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecCapabilities, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_EXTENSIONS), CreateCharList, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_SIZE), CreateULong, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
@@ -936,7 +1014,7 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_ENDIAN_LITTLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_ERROR_CORRECTION_SUPPORT), CreateBool, Property::PT_BOOL},
-		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecutionCapabilities, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecCapabilities, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_EXTENSIONS), CreateCharList, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_SIZE), CreateULong, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
@@ -1001,7 +1079,7 @@ Node* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		{NIV_VALUESTRING (CL_DEVICE_DOUBLE_FP_CONFIG), CreateDeviceFPConfig, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_ENDIAN_LITTLE), CreateBool, Property::PT_BOOL},
 		{NIV_VALUESTRING (CL_DEVICE_ERROR_CORRECTION_SUPPORT), CreateBool, Property::PT_BOOL},
-		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecutionCapabilities, Property::PT_STRING},
+		{NIV_VALUESTRING (CL_DEVICE_EXECUTION_CAPABILITIES), CreateDeviceExecCapabilities, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_EXTENSIONS), CreateCharList, Property::PT_STRING},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_SIZE), CreateULong, Property::PT_INT64},
 		{NIV_VALUESTRING (CL_DEVICE_GLOBAL_MEM_CACHE_TYPE), CreateDeviceMemCacheType, Property::PT_STRING},
@@ -1219,11 +1297,18 @@ int main(int argc, char* argv[])
 					jsonPrinter.Write (std::cout, root);
 					break;
 				}
+
+				case 'c':
+				{
+					ConsolePrinter consolePrinter;
+					consolePrinter.Write (std::cout, root);
+					break;
+				}
 				}
 			}
 		} else {
-			XmlPrinter xmlPrinter;
-			xmlPrinter.Write (std::cout, root);
+			ConsolePrinter consolePrinter;
+			consolePrinter.Write (std::cout, root);
 		}
 	} catch (...) {
 		std::cerr << "Error while obtaining OpenCL diagnostic information\n";
