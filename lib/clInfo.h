@@ -1,7 +1,6 @@
 /**
 * @author: Matthaeus G. "Anteru" Chajdas
-*
-* License: NDL
+Licensed under the 3-clause BSD license
 */
 
 #ifndef NIV_CLINFO_H_293E9B16E02AFDE6E65A7A5640D52027F79EC4AF

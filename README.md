@@ -1,10 +1,10 @@
-# cldiag #
+# OpenCL Info #
 
-This is a simple tool to gather diagnostic information about  the available OpenCL platforms.
+This is a simple tool to gather diagnostic information about  the available OpenCL platforms. It consists of three parts: ``lib`` which is a static library that gathers the information, ``cli`` which is a simple command line wrapper that can format the output as Xml, Json or plain text and ``ui`` which is a graphical frontend for the data.
 
 ## License
 
-Copyright (c) 2014, Matthäus G. Chajdas
+Copyright (c) 2014, 2015 Matthäus G. Chajdas
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
