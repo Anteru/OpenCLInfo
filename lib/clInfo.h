@@ -76,7 +76,7 @@ enum cliStatus
 
 struct cliInfo;
 /*
-These functions return CLDS_SUCCESS if everything worked fine.
+These functions return CLI_Success if everything worked fine.
 */
 
 /**
