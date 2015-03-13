@@ -39,6 +39,11 @@
 #endif
 
 namespace {
+/**
+Simple memory pool.
+
+Allocates memory in blocks. Assumes all entries are POD types.
+*/
 template <int BlockSize = 1048576>
 struct Pool
 {
@@ -141,6 +146,7 @@ struct Version
 	}
 };
 
+////////////////////////////////////////////////////////////////////////////////
 Version ParseVersion (const char* s)
 {
 	// Version string format is: OpenCL 1.0 VENDOR_SPECIFIC_STUFF
@@ -180,7 +186,7 @@ Version ParseVersion (const char* s)
 	return { std::atoi (majorVersion), std::atoi (minorVersion) };
 }
 
-// For image_format output
+////////////////////////////////////////////////////////////////////////////////
 const char* ChannelOrderToString (cl_channel_order order)
 {
 	switch (order) {
@@ -205,7 +211,7 @@ const char* ChannelOrderToString (cl_channel_order order)
 	}
 }
 
-// for image format output
+////////////////////////////////////////////////////////////////////////////////
 const char* ChannelDataTypeToString (cl_channel_type type)
 {
 	switch (type) {
@@ -224,14 +230,15 @@ const char* ChannelDataTypeToString (cl_channel_type type)
 	case CL_UNSIGNED_INT32: return "uint32";
 	case CL_HALF_FLOAT: return "half";
 	case CL_FLOAT: return "float";
-	default: return "Unknown data type";
+
+	default: return "Unknown channel data type";
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 cliValue* CreateValue (Pool<>& pool, const char* value)
 {
-	cliValue* v = pool.Allocate<cliValue> ();
+	auto v = pool.Allocate<cliValue> ();
 
 	const auto l = ::strlen (value);
 
@@ -246,7 +253,7 @@ cliValue* CreateValue (Pool<>& pool, const char* value)
 ////////////////////////////////////////////////////////////////////////////////
 cliValue* CreateValue (Pool<>& pool, const std::int64_t value)
 {
-	cliValue* v = pool.Allocate<cliValue> ();
+	auto v = pool.Allocate<cliValue> ();
 	v->i = value;
 	return v;
 }
@@ -254,7 +261,7 @@ cliValue* CreateValue (Pool<>& pool, const std::int64_t value)
 ////////////////////////////////////////////////////////////////////////////////
 cliValue* CreateValue (Pool<>& pool, const bool value)
 {
-	cliValue* v = pool.Allocate<cliValue> ();
+	auto v = pool.Allocate<cliValue> ();
 	v->b = value;
 	return v;
 }
@@ -308,17 +315,23 @@ cliValue* CreateCharList (Pool<>& pool, void* buffer, std::size_t)
 
 		if (*p == ' ') {
 			*p = '\0';
+
 			++p;
+
+			// Skip all following spaces
+			while (*p == ' ') {
+				++p;
+			}
 		}
 
-		cliValue* v = CreateValue (pool, s);
+		auto value = CreateValue (pool, s);
 
 		if (last) {
-			last->next = v;
-			last = v;
+			last->next = value;
+			last = value;
 		} else {
-			result = v;
-			last = v;
+			result = value;
+			last = value;
 		}
 	}
 
@@ -391,15 +404,15 @@ cliValue* CreateBitfield (const T config, const BitfieldFetcher<T> (&fields)[Siz
 
 	for (const auto field : fields) {
 		if ((config & field.value) == field.value) {
-			cliValue* v = pool.Allocate<cliValue> ();
-			v->s = field.n;
+			auto value = pool.Allocate<cliValue> ();
+			value->s = field.n;
 
 			if (lastValue) {
-				lastValue->next = v;
+				lastValue->next = value;
 				lastValue = lastValue->next;
 			} else {
-				result = v;
-				lastValue = v;
+				result = value;
+				lastValue = value;
 			}
 		}
 	}
@@ -565,29 +578,29 @@ cliValue* GetValue (GetInfoFunction getInfoFunction, CLObject clObject, Info inf
 ////////////////////////////////////////////////////////////////////////////////
 template <typename F, typename P, typename Container>
 void GetProperties (Pool<>& pool, cliNode* cliNode, F f, P clObject,
-	const Container& c)
+	const Container& container)
 {
-	cliProperty* lastProperty = cliNode->firstProperty;
-	
+	auto lastProperty = cliNode->firstProperty;
+
 	// If the cliNode already has a property, skip until the end of the property
 	// list
 	while (lastProperty && lastProperty->next) {
 		lastProperty = lastProperty->next;
 	}
 
-	for (const auto info : c) {
-		cliProperty* p = pool.Allocate<cliProperty> ();
-		p->type = info.type;
-		p->name = info.n;
-		p->hint = info.h;
-		p->value = GetValue (f, clObject, info.info, pool, info.cf);
+	for (const auto info : container) {
+		auto property = pool.Allocate<cliProperty> ();
+		property->type = info.type;
+		property->name = info.n;
+		property->hint = info.h;
+		property->value = GetValue (f, clObject, info.info, pool, info.cf);
 
 		if (lastProperty) {
-			lastProperty->next = p;
+			lastProperty->next = property;
 			lastProperty = lastProperty->next;
 		} else {
-			cliNode->firstProperty = p;
-			lastProperty = p;
+			cliNode->firstProperty = property;
+			lastProperty = property;
 		}
 	}
 }
@@ -623,14 +636,14 @@ cliNode* GatherContextInfo (cl_context ctx, Pool<>& pool, const Version clVersio
 	}
 #endif
 
-	cliNode* imageFormats = pool.Allocate<cliNode> ();
-	imageFormats->name = "ImageFormats";
+	auto imageFormatsNode = pool.Allocate<cliNode> ();
+	imageFormatsNode->name = "ImageFormats";
 
-	cliNode* lastImageFormat = nullptr;
+	cliNode* lastImageFormatNode = nullptr;
 	for (const auto t : types) {
-		cliNode* imageFormat = pool.Allocate <cliNode> ();
-		imageFormat->kind = t.n;
-		imageFormat->name = "ObjectType";
+		auto imageFormatNode = pool.Allocate <cliNode> ();
+		imageFormatNode->kind = t.n;
+		imageFormatNode->name = "ObjectType";
 
 		cl_uint numImageFormats;
 		NIV_SAFE_CL (clGetSupportedImageFormats (ctx, CL_MEM_READ_WRITE, t.type,
@@ -668,21 +681,21 @@ cliNode* GatherContextInfo (cl_context ctx, Pool<>& pool, const Version clVersio
 				lastFormat->next = formatcliNode;
 				lastFormat = lastFormat->next;
 			} else {
-				imageFormat->firstChild = formatcliNode;
+				imageFormatNode->firstChild = formatcliNode;
 				lastFormat = formatcliNode;
 			}
 		}
 
-		if (lastImageFormat) {
-			lastImageFormat->next = imageFormat;
-			lastImageFormat = lastImageFormat->next;
+		if (lastImageFormatNode) {
+			lastImageFormatNode->next = imageFormatNode;
+			lastImageFormatNode = lastImageFormatNode->next;
 		} else {
-			imageFormats->firstChild = imageFormat;
-			lastImageFormat = imageFormat;
+			imageFormatsNode->firstChild = imageFormatNode;
+			lastImageFormatNode = imageFormatNode;
 		}
 	}
 
-	return imageFormats;
+	return imageFormatsNode;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -821,8 +834,8 @@ cliNode* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 		// {NIV_VALUESTRING (CL_DEVICE_TERMINATE_CAPABILITY_KHR), CreateDeviceTerminateCapability, CLI_PropertyType_String},
 	};
 #endif
-	cliNode* node = pool.Allocate<cliNode> ();
-	node->name = "Device";
+	auto deviceNode = pool.Allocate<cliNode> ();
+	deviceNode->name = "Device";
 
 	// Get OpenCL version
 	std::size_t versionSize;
@@ -855,9 +868,8 @@ cliNode* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 			infos_CL_1_2.begin (), infos_CL_1_2.end ());
 	}
 #endif
-
 #if CL_VERSION_2_0
-	if (version >= Version (2, 0)) {
+	else if (version >= Version (2, 0)) {
 		propertiesToFetch.insert (propertiesToFetch.end (),
 			infos_CL_1_2.begin (), infos_CL_1_2.end ());
 		propertiesToFetch.insert (propertiesToFetch.end (),
@@ -868,32 +880,33 @@ cliNode* GatherDeviceInfo (cl_device_id id, Pool<>& pool)
 	// Sort by name
 	std::sort (propertiesToFetch.begin (), propertiesToFetch.end (),
 			   [](const PropertyFetcher<cl_device_info>& a,
-			   const PropertyFetcher<cl_device_info>& b) {
-		return ::strcmp (a.n, b.n) < 0;
+				  const PropertyFetcher<cl_device_info>& b) {
+					return ::strcmp (a.n, b.n) < 0;
 	});
 
-	GetProperties (pool, node, clGetDeviceInfo, id, propertiesToFetch);
+	GetProperties (pool, deviceNode, clGetDeviceInfo, id, propertiesToFetch);
 
 	cl_int result;
 	auto ctx = clCreateContext (nullptr, 1, &id, nullptr, nullptr, &result);
 
 	if (result == CL_SUCCESS) {
-		node->firstChild = GatherContextInfo (ctx, pool, version);
+		deviceNode->firstChild = GatherContextInfo (ctx, pool, version);
 	}
 
-	return node;
+	clReleaseContext (ctx);
+
+	return deviceNode;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 cliNode* GatherOpenCLInfo (Pool<>& pool)
 {
-	cliNode* root = pool.Allocate <cliNode> ();
-
-	root->name = "Platforms";
+	auto rootNode = pool.Allocate <cliNode> ();
+	rootNode->name = "Platforms";
 
 	cl_uint numPlatforms;
-
 	NIV_SAFE_CL(clGetPlatformIDs (0, NULL, &numPlatforms));
+
 	if (numPlatforms <= 0) {
 		std::cerr << "Failed to find any OpenCL platform." << std::endl;
 		return nullptr;
@@ -904,17 +917,17 @@ cliNode* GatherOpenCLInfo (Pool<>& pool)
 
 	cliNode* lastPlatformNode = nullptr;
 	for (const auto platformId : platformIds) {
-		cliNode* platform = pool.Allocate <cliNode> ();
+		auto platformNode = pool.Allocate <cliNode> ();
 
-		if (root->firstChild) {
-			lastPlatformNode->next = platform;
+		if (rootNode->firstChild) {
+			lastPlatformNode->next = platformNode;
 			lastPlatformNode = lastPlatformNode->next;
 		} else {
-			root->firstChild = platform;
-			lastPlatformNode = platform;
+			rootNode->firstChild = platformNode;
+			lastPlatformNode = platformNode;
 		}
 
-		platform->name = "Platform";
+		platformNode->name = "Platform";
 
 		static const std::vector<PropertyFetcher<cl_platform_info>> infos = {
 			{ NIV_VALUESTRING (CL_PLATFORM_PROFILE), CreateChar, CLI_PropertyType_String},
@@ -924,63 +937,94 @@ cliNode* GatherOpenCLInfo (Pool<>& pool)
 			{ NIV_VALUESTRING (CL_PLATFORM_EXTENSIONS), CreateCharList, CLI_PropertyType_String}
 		};
 
-		GetProperties (pool, platform, clGetPlatformInfo, platformId, infos);
+		GetProperties (pool, platformNode, clGetPlatformInfo, platformId, infos);
 
 		cl_uint numDevices;
-		NIV_SAFE_CL (clGetDeviceIDs (platformId, CL_DEVICE_TYPE_ALL, 0, nullptr, &numDevices));
+		NIV_SAFE_CL (clGetDeviceIDs (platformId, CL_DEVICE_TYPE_ALL,
+			0, nullptr, &numDevices));
 		std::vector<cl_device_id> deviceIds (numDevices);
-		NIV_SAFE_CL (clGetDeviceIDs (platformId, CL_DEVICE_TYPE_ALL, numDevices, deviceIds.data (), 0));
+		NIV_SAFE_CL (clGetDeviceIDs (platformId, CL_DEVICE_TYPE_ALL,
+			numDevices, deviceIds.data (), 0));
 
 		cliNode* last = nullptr;
 
-		cliNode* devices = pool.Allocate <cliNode> ();
-		devices->name = "Devices";
-		platform->firstChild = devices;
+		auto devicesNode = pool.Allocate <cliNode> ();
+		devicesNode->name = "Devices";
+		platformNode->firstChild = devicesNode;
 
 		for (const auto deviceId : deviceIds) {
-			cliNode* deviceNode = GatherDeviceInfo (deviceId, pool);
+			auto deviceNode = GatherDeviceInfo (deviceId, pool);
 
 			if (last) {
 				last->next = deviceNode;
 				last = last->next;
 			} else {
-				devices->firstChild = deviceNode;
+				devicesNode->firstChild = deviceNode;
 				last = deviceNode;
 			}
 		}
 	}
 
-	return root;
+	return rootNode;
 }
 }
 
+////////////////////////////////////////////////////////////////////////////////
 struct cliInfo
 {
 	Pool<>			pool;
-	struct cliNode*	root;
+	struct cliNode*	root = nullptr;
 };
 
+////////////////////////////////////////////////////////////////////////////////
 int cliInfo_Create (cliInfo** info)
 {
+	if (info == nullptr) {
+		return CLI_Error;
+	}
+
 	*info = new cliInfo;
 
 	return CLI_Success;
 }
 
+////////////////////////////////////////////////////////////////////////////////
 int cliInfo_Gather (cliInfo* info)
 {
-	info->root = GatherOpenCLInfo (info->pool);
+	if (info->root) {
+		return CLI_Error;
+	}
+
+	try {
+		info->root = GatherOpenCLInfo (info->pool);
+	} catch (const std::exception&) {
+		return CLI_Error;
+	}
 
 	return CLI_Success;
 }
 
+////////////////////////////////////////////////////////////////////////////////
 int cliInfo_GetRoot (const cliInfo* info, cliNode** root)
 {
+	if (info == nullptr) {
+		return CLI_Error;
+	}
+
+	if (info->root == nullptr) {
+		return CLI_Error;
+	}
+
+	if (root == nullptr) {
+		return CLI_Error;
+	}
+
 	*root = info->root;
 
 	return CLI_Success;
 }
 
+////////////////////////////////////////////////////////////////////////////////
 int cliInfo_Destroy (cliInfo* info)
 {
 	delete info;
